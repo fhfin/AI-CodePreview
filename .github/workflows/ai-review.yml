@@ -28,14 +28,21 @@ jobs:
       - name: Run AI Review
         uses: actions/github-script@v7
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # 推荐使用 DeepSeek，性价比极高，且完全兼容 OpenAI SDK
+          # 在 GitHub Secrets 中配置 API_KEY
+          API_KEY: ${{ secrets.AI_API_KEY }} 
+          # 可选配置，默认使用 OpenAI 官方地址
+          BASE_URL: ${{ vars.AI_BASE_URL || 'https://api.openai.com/v1' }}
+          # 可选配置，默认使用 gpt-4-turbo
+          MODEL: ${{ vars.AI_MODEL || 'gpt-4-turbo' }}
         with:
           script: |
             const OpenAI = require('openai');
             
-            // 初始化 OpenAI
+            // 初始化 OpenAI (支持 DeepSeek / Moonshot / OpenRouter 等)
             const openai = new OpenAI({
-              apiKey: process.env.OPENAI_API_KEY
+              apiKey: process.env.API_KEY,
+              baseURL: process.env.BASE_URL
             });
 
             // 获取 PR 信息
@@ -58,7 +65,7 @@ jobs:
               return;
             }
 
-            // 简单截断防止 Token 溢出 (生产环境建议按文件拆分)
+            // 简单截断防止 Token 溢出
             const diffContent = diffData.substring(0, 15000);
 
             // 2. 构造 Prompt
@@ -71,13 +78,13 @@ jobs:
             ${diffContent}
             `;
 
-            console.log('🤖 Asking AI...');
+            console.log(`🤖 Asking AI (${process.env.MODEL})...`);
 
             // 3. 调用 AI
             try {
               const completion = await openai.chat.completions.create({
                 messages: [{ role: "user", content: prompt }],
-                model: "gpt-4-turbo",
+                model: process.env.MODEL,
               });
 
               const reviewComment = completion.choices[0].message.content;
@@ -87,10 +94,10 @@ jobs:
                 owner,
                 repo,
                 issue_number: pull_number,
-                body: `## 🤖 Custom AI Review\n\n${reviewComment}`
+                body: `## 🤖 AI Code Review (${process.env.MODEL})\n\n${reviewComment}`
               });
 
             } catch (error) {
-              console.error('Error calling OpenAI:', error);
+              console.error('Error calling AI:', error);
               core.setFailed(error.message);
             }
