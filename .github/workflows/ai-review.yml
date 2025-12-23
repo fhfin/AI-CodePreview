@@ -1,0 +1,100 @@
+name: Custom AI Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ai-review:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 检出代码 (虽然我们主要用 API 拿 Diff，但检出是个好习惯)
+      - uses: actions/checkout@v4
+
+      # 2. 安装 Node 环境
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 3. 安装依赖 (OpenAI SDK)
+      - name: Install Dependencies
+        run: npm install openai
+
+      # 4. 执行核心脚本
+      - name: Run AI Review
+        uses: actions/github-script@v7
+        env:
+          # 在 GitHub Secrets 中配置 DEEPSEEK_API_KEY
+          API_KEY: ${{ secrets.DEEPSEEK_API_KEY }} 
+          BASE_URL: 'https://api.deepseek.com'
+          MODEL: 'deepseek-chat'
+        with:
+          script: |
+            const OpenAI = require('openai');
+            
+            // 初始化 DeepSeek (通过 OpenAI SDK)
+            const openai = new OpenAI({
+              apiKey: process.env.API_KEY,
+              baseURL: process.env.BASE_URL
+            });
+
+            // 获取 PR 信息
+            const { owner, repo } = context.repo;
+            const pull_number = context.issue.number;
+
+            // 1. 获取 Diff
+            // GitHub API 可以直接返回 diff 格式
+            const { data: diffData } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number,
+              mediaType: {
+                format: "diff",
+              },
+            });
+
+            if (!diffData) {
+              console.log('No diff found');
+              return;
+            }
+
+            // 简单截断防止 Token 溢出
+            const diffContent = diffData.substring(0, 15000);
+
+            // 2. 构造 Prompt
+            const prompt = `
+            你是一个资深代码评审员。请检查以下 Git Diff。
+            重点关注：Bug、安全漏洞、TypeScript 类型错误。
+            请用 Markdown 格式列出问题。如果代码完美，请回复 "LGTM 👍"。
+            
+            Diff:
+            ${diffContent}
+            `;
+
+            console.log(`🤖 Asking AI (${process.env.MODEL})...`);
+
+            // 3. 调用 AI
+            try {
+              const completion = await openai.chat.completions.create({
+                messages: [{ role: "user", content: prompt }],
+                model: process.env.MODEL,
+              });
+
+              const reviewComment = completion.choices[0].message.content;
+
+              // 4. 提交评论到 PR
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pull_number,
+                body: `## 🤖 AI Code Review (${process.env.MODEL})\n\n${reviewComment}`
+              });
+
+            } catch (error) {
+              console.error('Error calling AI:', error);
+              core.setFailed(error.message);
+            }
